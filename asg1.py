@@ -14,6 +14,8 @@ class Figure:
         self.mouse_up_handler = None
         self.mouse_over_handler = None
         self.mouse_wheel_handler = None
+        self.key_down_handler = None
+        self.key_up_handler = None
 
         fig,ax = plt.subplots(figsize=Figure.default_figsize_inches)
         self.fig = fig
@@ -23,6 +25,8 @@ class Figure:
         fig.canvas.mpl_connect('button_release_event', self.on_button_release)
         fig.canvas.mpl_connect('motion_notify_event', self.on_motion_notify)
         fig.canvas.mpl_connect('scroll_event', self.on_scroll)
+        fig.canvas.mpl_connect('key_press_event', self.on_key_press)
+        fig.canvas.mpl_connect('key_release_event', self.on_key_release)
 
         ax.set_axis_off()
 
@@ -56,6 +60,12 @@ class Figure:
     def set_mouse_wheel_handler(self, handler):
         self.mouse_wheel_handler = handler
 
+    def set_key_down_handler(self, handler):
+        self.key_down_handler = handler
+
+    def set_key_up_handler(self, handler):
+        self.key_up_handler = handler
+
     def create_mask_view(self, colors, fill_value):
         levels = range(len(colors))
         cmap, norm = mpl.colors.from_levels_and_colors(levels, colors, extend='max')
@@ -65,10 +75,15 @@ class Figure:
         mask_view_id = self.register_view(mask_view)
         return mask_view_id
 
-    def set_mask_view_data(self, mask_view_id, mask_data):
+    def set_mask_view_data(self, mask_view_id, mask_data, colors = None):
         if mask_view_id in self.views:
             mask_view = self.views[mask_view_id]
             mask_view.set_data(mask_data)
+            if colors!=None:
+                levels = range(len(colors))
+                cmap, norm = mpl.colors.from_levels_and_colors(levels, colors, extend='max')
+                mask_view.set_cmap(cmap)
+
 
     def create_circle_view(self, x, y, radius, color):
         circle_view = plt.Circle((x, y), radius, color=color, fill=False)
@@ -134,6 +149,14 @@ class Figure:
         if not self.mouse_wheel_handler is None:
             self.mouse_wheel_handler(e)
 
+    def raise_key_down(self, e):
+        if not self.key_down_handler is None:
+            self.key_down_handler(e)
+
+    def raise_key_up(self, e):
+        if not self.key_up_handler is None:
+            self.key_up_handler(e)
+
     def is_over_image(self, e):
         return (not self.img is None) and e.inaxes == self.img.axes
 
@@ -159,6 +182,12 @@ class Figure:
     def on_scroll(self, e):
         if (self.is_over_image(e)):
             self.raise_mouse_wheel(e)
+
+    def on_key_press(self, e):
+        self.raise_key_down(e)
+
+    def on_key_release(self, e):
+        self.raise_key_up(e)
 
 class MaskBuilder:
     def __init__(self, num_rows, num_cols, fill_value):
@@ -414,3 +443,82 @@ class RegionGrowingPresenter:
             region_mask = self.alg.get_region_mask()
             self.fig.set_mask_view_data(self.region_mask_view_id, region_mask)
             self.fig.draw()
+
+from matplotlib.colors import colorConverter, cnames
+
+class KmeansPresenter:
+    def __init__(self, img, alg):
+        self.img = img
+        self.alg = alg
+        self.colors = ['none']     # example of a color list is ['red','green','blue',(1.0,0.0,0.0,0.3)]
+        self.palette = 'none'  # other possible values are 'transparent' 'solid', and 'mean'
+        self.set_colors('transparent')
+ 
+    def connect_figure(self, fig):
+        self.fig = fig
+        fig.set_title('K-means')
+        fig.set_image(self.img)
+
+        fig.set_key_down_handler(self.on_key_down)
+        self.region_mask_view_id = fig.create_mask_view(self.colors, self.alg.no_label)
+        self.fig.draw()
+        
+    def set_colors(self, palette):
+        self.palette = palette
+        all_colors = cnames.keys()
+        if palette=='transparent':
+            self.colors = list(colorConverter.to_rgba_array(np.random.choice(all_colors,self.alg.k),0.7)) + ['none']
+        if palette=='solid':
+            self.colors = list(np.random.choice(all_colors,self.alg.k)) + ['none']
+        if palette=='mean':
+            self.colors = list(np.minimum(1.0,self.alg.means[c,:3]/255.0) for c in range(self.alg.k)) + ['none']
+        
+    def on_key_down(self, e): # do the following when certain "key" is pressed
+        if e.key == 'i':    # make 1 iteration of K-means
+            self.alg.compute_k_means_clusters()
+            region_mask = self.alg.get_region_mask()
+            if (self.palette=='mean'):
+                self.set_colors('mean')
+            self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+            self.fig.draw() 
+        if e.key == 'c':    # run K-means to convergence (when SSE (energy) improvement is less than given threshold)
+            delta = np.infty
+            while (delta>0.001):
+                delta = self.alg.compute_k_means_clusters()
+            region_mask = self.alg.get_region_mask()
+            if (self.palette=='mean'):
+                self.set_colors('mean')
+            self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+            self.fig.draw() 
+        if e.key == 'v':    # run K-means to convergence with visualization of each iteration
+            delta = float('inf')
+            while (delta>0.001):
+                delta = self.alg.compute_k_means_clusters()
+                region_mask = self.alg.get_region_mask()
+                if (self.palette=='mean'):
+                    self.set_colors('mean')
+                self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+                self.fig.draw() 
+        if e.key == 'r':    # restart K-means (with random clusters)
+            self.alg.init_means()
+            self.alg.compute_k_means_clusters()
+            region_mask = self.alg.get_region_mask()
+            if (self.palette=='mean'):
+                self.set_colors('mean')
+            self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+            self.fig.draw() 
+        if e.key == 's':    # changes colors to some Solid colors (randomly selected)
+            self.set_colors('solid')
+            region_mask = self.alg.get_region_mask()
+            self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+            self.fig.draw() 
+        if e.key == 't':    # change colors to some Transparent colors (randomly selected)
+            region_mask = self.alg.get_region_mask()
+            self.set_colors('transparent')
+            self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+            self.fig.draw() 
+        if e.key == 'm':    # changes colors to mean RGB in each segment
+            region_mask = self.alg.get_region_mask()
+            self.set_colors('mean')
+            self.fig.set_mask_view_data(self.region_mask_view_id, region_mask, self.colors)
+            self.fig.draw() 
